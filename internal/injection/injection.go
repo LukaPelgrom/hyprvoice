@@ -56,9 +56,22 @@ func (i *injector) Inject(ctx context.Context, text string) error {
 		return fmt.Errorf("cannot inject empty text")
 	}
 
-	// Try each backend in order
+	// Always copy to clipboard first (best effort, don't fail if clipboard fails)
+	clipboardBackend := NewClipboardBackend()
+	clipboardErr := clipboardBackend.Inject(ctx, text, i.config.ClipboardTimeout)
+	if clipboardErr != nil {
+		log.Printf("Injection: clipboard copy failed (will continue with other backends): %v", clipboardErr)
+	} else {
+		log.Printf("Injection: text copied to clipboard")
+	}
+
+	// Try each backend in order for typing
 	var lastErr error
 	for _, backend := range i.backends {
+		// Skip clipboard backend since we already did it
+		if backend.Name() == "clipboard" {
+			continue
+		}
 		timeout := i.getTimeout(backend.Name())
 		err := backend.Inject(ctx, text, timeout)
 		if err == nil {
@@ -69,7 +82,17 @@ func (i *injector) Inject(ctx context.Context, text string) error {
 		lastErr = err
 	}
 
-	return fmt.Errorf("all injection backends failed, last error: %w", lastErr)
+	// If clipboard succeeded but all typing backends failed, that's still partial success
+	if clipboardErr == nil && lastErr != nil {
+		log.Printf("Injection: typing failed but text is in clipboard")
+		return nil
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("all injection backends failed, last error: %w", lastErr)
+	}
+
+	return nil
 }
 
 func (i *injector) getTimeout(backendName string) time.Duration {
